@@ -1,0 +1,224 @@
+<script data-bagian="B">
+'use strict';
+/* OSIS Archive: skrip bagian 2 dari 5. Berkas ini DIAWALI tag script dan DIAKHIRI tag penutup script: jangan dihapus. Semua bagian ScriptsA-ScriptsE wajib ada. */
+function randomHex(n) { var a = new Uint8Array(n); window.crypto.getRandomValues(a); return bytesToHex(a); }
+function cryptoMsg(e) {
+  return (e && e.message === 'NO_CRYPTO') ? 'Browser tidak mendukung fitur keamanan yang diperlukan (Web Crypto). Gunakan Chrome, Edge, Firefox, atau Safari versi terbaru lewat HTTPS.'
+    : 'Terjadi kesalahan saat memproses kata sandi. Coba lagi.';
+}
+function pwProblem(pw, username) {
+  if (pw.length < MIN_PW) return 'Kata sandi minimal ' + MIN_PW + ' karakter.';
+  if (/^(.)\1+$/.test(pw)) return 'Kata sandi terlalu mudah ditebak.';
+  var low = pw.toLowerCase();
+  if (username && low.indexOf(username.toLowerCase()) >= 0) return 'Kata sandi tidak boleh memuat username.';
+  if (WEAK.some(function (w) { return low.indexOf(w) >= 0; })) return 'Kata sandi terlalu umum. Pakai kalimat yang sulit ditebak.';
+  var classes = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/].filter(function (r) { return r.test(pw); }).length;
+  if (classes < 2 && pw.length < 16) return 'Gabungkan huruf dengan angka atau simbol, atau pakai kalimat sandi minimal 16 karakter.';
+  return '';
+}
+function login(username, key, remember) {
+  return call('auth.login', { username: username, key: key, remember: remember === true, oldDevice: devStore.get() || undefined });
+}
+function startSession(r) { S.token = r.token; S.user = r.user; store.set(r.token); if (r.device !== undefined || r.deviceDenied) applyDevice(r); S.route = 'dashboard'; S.notice = ''; render(); }
+
+
+/* ===================== LAYAR MASUK / AKTIVASI ===================== */
+function brand() { return h('div', { class: 'brand' }, h('span', { class: 'brand-mark' }, icon('folder')), 'OSIS Archive'); }
+
+function loginView() {
+  var msg = msgBox(), user = input('text', { autocomplete: 'username', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false', required: true });
+  var pw = pwField('Kata sandi', { autocomplete: 'current-password' });
+  if (S.notice) msg.set(S.notice, 'info');
+  var rem = h('input', { type: 'checkbox', id: 'remember-login', checked: REMEMBER_DEFAULT });
+  var remRow = h('div', { class: 'check' }, rem, h('div', null, h('label', { for: 'remember-login' }, 'Ingat saya di perangkat ini'), h('p', { class: 'hint' }, 'Jangan dicentang di HP atau komputer umum. Bisa dicabut kapan saja lewat Profil.')));
+  var submit = h('button', { type: 'submit', class: 'btn primary lg' }, icon('lock'), 'Masuk');
+  var form = h('form', { class: 'card', novalidate: true, onsubmit: function (e) {
+    e.preventDefault(); msg.clear();
+    var u = user.value.trim().toLowerCase(), p = pw.input.value;
+    if (!u || !p) { msg.set('Isi username dan kata sandi.'); return; }
+    run(submit, function () {
+      msg.set('Memeriksa kata sandi…', 'info');
+      return call('auth.salt', { username: u }).then(function (s) {
+        if (!s.ok) return s;
+        return deriveKey(p, s.salt, s.iterations).then(function (key) { return login(u, key, rem.checked); });
+      }).then(function (r) {
+        if (r.ok) { startSession(r); return; }
+        msg.set(r.message || 'Login gagal.'); pw.input.value = ''; pw.input.focus();
+      }, function (e) { msg.set(cryptoMsg(e)); });
+    });
+  } }, h('h1', null, 'Masuk'), msg.node, field('Username', user), pw.node, remRow, submit);
+  return h('main', { class: 'auth-wrap', id: 'main' }, brand(), h('p', { class: 'meta' }, 'Arsip dokumen digital OSIS. Akun dibuat oleh admin.'), form,
+    h('p', null, 'Baru dibuatkan akun? ', h('button', { class: 'linklike', type: 'button', onclick: function () { S.authView = 'activate'; S.notice = ''; render(); } }, 'Aktifkan akun dengan kode dari admin')));
+}
+
+function activateView() {
+  var msg = msgBox(), user = input('text', { autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false' });
+  var code = input('text', { autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false', placeholder: 'XXXX-XXXX-XXXX' });
+  var pw = pwField('Kata sandi baru', { autocomplete: 'new-password' }), pw2 = pwField('Ulangi kata sandi baru', { autocomplete: 'new-password' });
+  var rem2 = h('input', { type: 'checkbox', id: 'remember-act', checked: REMEMBER_DEFAULT });
+  var remRow2 = h('div', { class: 'check' }, rem2, h('div', null, h('label', { for: 'remember-act' }, 'Ingat saya di perangkat ini'), h('p', { class: 'hint' }, 'Jangan dicentang di HP atau komputer umum.')));
+  var submit = h('button', { type: 'submit', class: 'btn primary lg' }, icon('check'), 'Aktifkan akun');
+  var form = h('form', { class: 'card', novalidate: true, onsubmit: function (e) {
+    e.preventDefault(); msg.clear();
+    var u = user.value.trim().toLowerCase(), c = code.value.trim(), p = pw.input.value;
+    if (!u || !c || !p) { msg.set('Lengkapi semua isian.'); return; }
+    var prob = pwProblem(p, u); if (prob) { msg.set(prob); return; }
+    if (p !== pw2.input.value) { msg.set('Kata sandi dan ulangannya tidak sama.'); return; }
+    run(submit, function () {
+      msg.set('Membuat kata sandi yang aman… ini bisa memakan beberapa detik.', 'info');
+      var salt = randomHex(16), key;
+      return call('auth.salt', { username: u }).then(function (s) {
+        if (!s.ok) throw { resp: s };
+        return deriveKey(p, salt, s.iterations);
+      }).then(function (k) { key = k; return call('auth.activate', { username: u, code: c, salt: salt, key: key }); })
+        .then(function (r) { if (!r.ok) throw { resp: r }; return login(u, key, rem2.checked); })
+        .then(function (r) { if (!r.ok) throw { resp: r }; startSession(r); toast('Akun aktif. Selamat datang!', 'success'); })
+        .catch(function (e) { msg.set(e && e.resp ? (e.resp.message || 'Aktivasi gagal.') : cryptoMsg(e)); });
+    });
+  } }, h('h1', null, 'Aktivasi akun'), msg.node,
+    h('p', { class: 'meta' }, 'Masukkan username dan kode aktivasi dari admin, lalu buat kata sandi Anda sendiri. Admin tidak akan mengetahui kata sandi ini.'),
+    field('Username', user), field('Kode aktivasi', code), pw.node, pw2.node, h('p', { class: 'hint' }, 'Minimal ' + MIN_PW + ' karakter. Kalimat sandi yang panjang lebih aman daripada kata pendek.'), remRow2, submit);
+  return h('main', { class: 'auth-wrap', id: 'main' }, brand(), form,
+    h('p', null, h('button', { class: 'linklike', type: 'button', onclick: function () { S.authView = 'login'; render(); } }, 'Kembali ke halaman masuk')));
+}
+
+/* ===================== KERANGKA APLIKASI ===================== */
+function navItems() {
+  var items = [['dashboard', 'Dashboard', 'home'], ['docs', 'Semua Dokumen', 'search'], ['categories', 'Kategori', 'folder'], ['upload', 'Unggah Dokumen', 'upload'], ['mine', 'Dokumen Saya', 'file'], ['profile', 'Profil', 'user']];
+  if (S.user.role === 'admin') items.push(['admin', 'Pengaturan Admin', 'shield']);
+  return items;
+}
+function navButton(it) { return h('button', { type: 'button', 'data-route': it[0], onclick: function () { go(it[0]); } }, icon(it[2]), it[1]); }
+function logout() {
+  call('auth.logout', { deviceToken: devStore.get() || undefined }).then(function () { devStore.clear(); endSession('Anda telah keluar.'); });
+}
+function shell() {
+  var items = navItems();
+  var side = h('nav', { class: 'sidebar', 'aria-label': 'Navigasi utama' }, brand(), h('div', { class: 'nav-list' }, items.map(navButton), h('button', { type: 'button', onclick: logout }, icon('logout'), 'Keluar')));
+  var mobile = [['dashboard', 'Beranda', 'home'], ['docs', 'Dokumen', 'search'], ['upload', 'Unggah', 'upload'], ['mine', 'Saya', 'file']];
+  var bottom = h('nav', { class: 'bottomnav', 'aria-label': 'Navigasi bawah' }, mobile.map(function (it) {
+    return h('button', { type: 'button', 'data-route': it[0], class: it[0] === 'upload' ? 'up' : null, onclick: function () { go(it[0]); } },
+      it[0] === 'upload' ? h('span', { class: 'pill' }, icon(it[2])) : icon(it[2]), it[1]);
+  }), h('button', { type: 'button', 'data-route': 'more', onclick: openMore }, icon('menu'), 'Lainnya'));
+  S.mainEl = h('main', { class: 'content', id: 'main', tabindex: '-1' });
+  var top = h('header', { class: 'topbar' }, brand(), h('div', { class: 'who' }, h('div', null, S.user.displayName), h('div', null, S.user.role === 'admin' ? 'Admin' : 'Anggota')));
+  return h('div', { style: 'display:contents' }, side, h('div', null, top, S.mainEl), bottom);
+}
+function openMore() {
+  var list = h('div', { class: 'nav-list' }, navItems().filter(function (i) { return ['categories', 'profile', 'admin'].indexOf(i[0]) >= 0; }).map(function (it) {
+    return h('button', { type: 'button', 'data-route': it[0], onclick: function () { m.close(); go(it[0]); } }, icon(it[2]), it[1]);
+  }), h('button', { type: 'button', onclick: function () { m.close(); logout(); } }, icon('logout'), 'Keluar'));
+  var m = openModal({ title: 'Menu', body: list });
+}
+function setNavActive() {
+  document.querySelectorAll('[data-route]').forEach(function (b) {
+    var r = b.getAttribute('data-route'), on = r === S.route || (r === 'more' && ['categories', 'profile', 'admin'].indexOf(S.route) >= 0);
+    if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
+}
+var VIEWS = {};
+function go(route, params) {
+  if (route === 'admin' && S.user.role !== 'admin') route = 'dashboard';
+  S.route = route; S.params = params || {}; var n = ++S.nav; setNavActive();
+  clear(S.mainEl); S.mainEl.appendChild(spinner()); window.scrollTo(0, 0);
+  Promise.resolve().then(function () { return VIEWS[route](); }).catch(function () { return errorBox({ message: 'Terjadi kesalahan menampilkan halaman.' }, function () { go(route, params); }); })
+    .then(function (node) {
+      if (n !== S.nav || !S.mainEl) return;
+      clear(S.mainEl); S.mainEl.appendChild(node);
+      var hd = S.mainEl.querySelector('h1'); if (hd) { hd.setAttribute('tabindex', '-1'); hd.focus({ preventScroll: true }); }
+    });
+}
+function render() {
+  var app = document.getElementById('app'); clear(app); closeAllModals();
+  if (!S.user) { app.appendChild(S.authView === 'activate' ? activateView() : loginView()); S.mainEl = null; return; }
+  app.appendChild(shell()); go(S.route);
+}
+function errorBox(r, retry) {
+  return h('div', { class: 'card' }, h('div', { class: 'msg error', role: 'alert' }, r.message || 'Terjadi kesalahan.'), retry ? btn('Coba lagi', { icon: 'refresh', onclick: retry }) : null);
+}
+
+/* ===================== DASHBOARD & KATEGORI ===================== */
+VIEWS.dashboard = function () {
+  return call('docs.dashboard').then(function (r) {
+    if (!r.ok) return errorBox(r, function () { go('dashboard'); });
+    var q = input('search', { placeholder: 'Cari judul, kegiatan, kata kunci…', 'aria-label': 'Cari dokumen' });
+    var form = h('form', { class: 'searchbar', role: 'search', onsubmit: function (e) { e.preventDefault(); S.filters.all = { q: q.value.trim() }; go('docs'); } }, q, btn('Cari', { type: 'submit', kind: 'primary', icon: 'search' }));
+    var cats = r.categories.length ? h('div', { class: 'chips' }, r.categories.map(function (c) {
+      return h('button', { class: 'chip', type: 'button', onclick: function () { S.filters.all = { categoryId: c.categoryId }; go('docs'); } }, c.categoryName, h('b', null, c.count));
+    })) : h('p', { class: 'empty' }, 'Belum ada kategori aktif.');
+    var ctx = { onChanged: function () { go('dashboard'); } };
+    return h('div', null, h('h1', null, 'Halo, ' + S.user.displayName),
+      form, btn('Unggah dokumen', { kind: 'primary', icon: 'upload', onclick: function () { go('upload'); } }),
+      h('div', { class: 'grid', style: 'margin:1rem 0' },
+        h('div', { class: 'card stat' }, h('b', null, r.totalAccessible), 'Arsip tersedia'),
+        h('div', { class: 'card stat' }, h('b', null, r.mine.count), 'Diunggah oleh saya')),
+      h('section', { 'aria-labelledby': 'h-kat' }, h('h2', { id: 'h-kat' }, 'Kategori'), cats),
+      h('section', { 'aria-labelledby': 'h-baru', style: 'margin-top:1.2rem' }, h('h2', { id: 'h-baru' }, 'Dokumen terbaru'),
+        r.recent.length ? r.recent.map(function (d) { return docCard(d, ctx); }) : h('p', { class: 'empty' }, 'Belum ada dokumen di arsip. Jadilah yang pertama mengunggah.')),
+      h('section', { 'aria-labelledby': 'h-saya' }, h('h2', { id: 'h-saya' }, 'Unggahan saya'),
+        r.mine.recent.length ? r.mine.recent.map(function (d) { return docCard(d, ctx); }) : h('p', { class: 'empty' }, 'Anda belum mengunggah dokumen.')));
+  });
+};
+VIEWS.categories = function () {
+  return call('docs.dashboard').then(function (r) {
+    if (!r.ok) return errorBox(r, function () { go('categories'); });
+    return h('div', null, h('h1', null, 'Kategori'), h('p', { class: 'meta' }, 'Pilih kategori untuk melihat dokumennya.'),
+      r.categories.map(function (c) {
+        return h('div', { class: 'card row-card' }, h('div', null, h('h3', null, c.categoryName), h('p', { class: 'meta' }, c.count + ' dokumen')),
+          btn('Lihat', { icon: 'search', onclick: function () { S.filters.all = { categoryId: c.categoryId }; go('docs'); } }));
+      }));
+  });
+};
+
+/* ===================== DOKUMEN: DAFTAR, DETAIL, BUKA ===================== */
+/* ----- gambar mini otomatis (tanpa klik) ----- */
+var thumbCache = {}, thumbQueue = [], thumbBusy = 0, THUMB_MAX = 3, THUMB_MIME = { 'image/png': 1, 'image/jpeg': 1 };
+function thumbFetch(id) {
+  var c = thumbCache[id];
+  if (c && (c.u || Date.now() - c.t < 120000)) return Promise.resolve(c.u);   // gagal/belum siap dicoba lagi setelah 2 menit
+  return new Promise(function (resolve) { thumbQueue.push({ id: id, resolve: resolve }); thumbPump(); });
+}
+function thumbPump() {
+  while (thumbBusy < THUMB_MAX && thumbQueue.length) {
+    var job = thumbQueue.shift(); thumbBusy++;
+    (function (j) {
+      call('docs.thumb', { documentId: j.id }).then(function (r) {
+        var ok = r.ok && r.available && THUMB_MIME[r.mime] && /^[A-Za-z0-9+\/=]+$/.test(r.base64 || '');
+        var url = ok ? 'data:' + r.mime + ';base64,' + r.base64 : null;
+        thumbCache[j.id] = { u: url, t: Date.now() }; thumbBusy--; j.resolve(url); thumbPump();
+      });
+    })(job);
+  }
+}
+var thumbObs = ('IntersectionObserver' in window) ? new IntersectionObserver(function (entries) {
+  entries.forEach(function (en) { if (en.isIntersecting) { thumbObs.unobserve(en.target); if (en.target.__load) en.target.__load(); } });
+}, { rootMargin: '200px' }) : null;
+function attachThumb(box, id, cls) {   // dimuat saat kartu terlihat di layar; jika gagal, ikon jenis file tetap tampil
+  var load = function () {
+    thumbFetch(id).then(function (url) {
+      if (!url || !box.isConnected) return;
+      box.textContent = ''; box.appendChild(h('img', { src: url, alt: cls ? 'Pratinjau halaman pertama' : '' })); box.classList.add('has-thumb');
+    });
+  };
+  if (thumbObs) { box.__load = load; thumbObs.observe(box); } else load();
+}
+
+function docCard(d, ctx) {
+  var open = d.fileStatus === 'tersedia';
+  var ico = h('div', { class: 'doc-ico', 'aria-hidden': 'true', onclick: function () { if (open) openViewer(d); } }, typeLabel(d.fileType));
+  if (open) attachThumb(ico, d.documentId);
+  return h('article', { class: 'card doc' }, ico,
+    h('div', { class: 'doc-main' },
+      h('h3', { class: 'doc-title' }, h('button', { class: 'linklike', type: 'button', onclick: function () { if (open) openViewer(d); else showDetail(d.documentId, ctx); } }, d.title)),
+      h('p', { class: 'meta' }, [d.categoryName, d.year, typeLabel(d.fileType), fmtSize(d.fileSize)].filter(Boolean).join(' \u00b7 ')),
+      h('p', { class: 'meta' }, d.uploaderName + ' \u00b7 ' + fmtDate(d.uploadedAt) + (d.activityName ? ' \u00b7 ' + d.activityName : '')),
+      d.description ? h('p', { class: 'desc' }, d.description) : null,
+      d.fileStatus !== 'tersedia' ? h('span', { class: 'badge ' + d.fileStatus }, STATUS_LABEL[d.fileStatus] || d.fileStatus) : null),
+    h('div', { class: 'doc-actions' },
+      open ? btn('Lihat', { sm: true, icon: 'eye', aria: 'Lihat ' + d.title, onclick: function () { openViewer(d); } }) : null,
+      open ? btn('Unduh', { sm: true, icon: 'download', aria: 'Unduh ' + d.title, onclick: function (e) { openDoc(d, 'download', e.currentTarget); } }) : null,
+      btn('Detail', { sm: true, icon: 'file', aria: 'Detail ' + d.title, onclick: function () { showDetail(d.documentId, ctx); } })));
+}
+window.__osisParts = (window.__osisParts || '') + 'B';
+/* AKHIR ScriptsB: jika baris ini tidak terlihat di akhir berkas, tempelannya terpotong. */
+</script>

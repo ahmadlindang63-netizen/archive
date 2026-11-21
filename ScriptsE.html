@@ -1,0 +1,173 @@
+<script data-bagian="E">
+'use strict';
+/* OSIS Archive: skrip bagian 5 dari 5. Berkas ini DIAWALI tag script dan DIAKHIRI tag penutup script: jangan dihapus. Semua bagian ScriptsA-ScriptsE wajib ada. */
+/* ===================== PENGATURAN ADMIN ===================== */
+VIEWS.admin = function () {
+  var tabs = [['akun', 'Akun', adminUsers], ['kategori', 'Kategori', adminCategories], ['arsip', 'Arsip', function () { return docsPanel('admin', { embedded: true }); }], ['cek', 'Pemeriksaan', adminChecks], ['aktivitas', 'Aktivitas', adminAudit]];
+  var panel = h('div'), cur = S.params.tab || 'akun', list = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Pengaturan admin' });
+  function select_(id) {
+    cur = id; S.params.tab = id;
+    list.querySelectorAll('[role=tab]').forEach(function (t) { t.setAttribute('aria-selected', t.getAttribute('data-tab') === id ? 'true' : 'false'); });
+    clear(panel); panel.appendChild(spinner());
+    var t = tabs.filter(function (x) { return x[0] === id; })[0];
+    Promise.resolve().then(t[2]).then(function (node) { if (cur === id) { clear(panel); panel.appendChild(node); } });
+  }
+  tabs.forEach(function (t) { list.appendChild(h('button', { class: 'tab', role: 'tab', 'data-tab': t[0], 'aria-selected': 'false', onclick: function () { select_(t[0]); } }, t[1])); });
+  setTimeout(function () { select_(cur); }, 0);
+  return h('div', null, h('h1', null, 'Pengaturan Admin'), list, panel);
+};
+function refreshTab() { var t = document.querySelector('[role=tab][aria-selected=true]'); if (t) t.click(); }
+
+function showCode(title, username, code, hours) {
+  var box = h('div', { class: 'code-box', 'aria-label': 'Kode aktivasi' }, code);
+  var body = h('div', null, h('p', null, 'Berikan kode ini kepada ', h('b', null, username), ' lewat jalur pribadi. Kode hanya tampil SEKALI di layar ini, berlaku ' + hours + ' jam, dan hanya bisa dipakai satu kali.'), box,
+    h('p', { class: 'hint' }, 'Pengguna membuka halaman masuk, memilih "Aktifkan akun", lalu membuat kata sandinya sendiri.'));
+  openModal({ title: title, body: body, persistent: true, actions: [
+    { label: 'Salin kode', onClick: function () {
+      var done = function () { toast('Kode disalin.', 'success'); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(done, function () { selectText(box); });
+      else selectText(box);
+    } },
+    { label: 'Saya sudah mencatat kode', kind: 'primary', onClick: function (m) { m.close(); refreshTab(); } }] });
+}
+function selectText(node) { var r = document.createRange(); r.selectNodeContents(node); var s = window.getSelection(); s.removeAllRanges(); s.addRange(r); toast('Kode dipilih. Salin secara manual.'); }
+
+function adminUsers() {
+  return call('users.list').then(function (r) {
+    if (!r.ok) return errorBox(r, refreshTab);
+    var msg = msgBox(), un = input('text', { autocapitalize: 'none', spellcheck: 'false', autocomplete: 'off' }), dn = input('text', { maxlength: '60', autocomplete: 'off' });
+    var role = select([['anggota', 'Anggota'], ['admin', 'Admin']], 'anggota'), add = h('button', { type: 'submit', class: 'btn primary' }, icon('plus'), 'Buat akun');
+    var form = h('form', { class: 'card', novalidate: true, onsubmit: function (e) {
+      e.preventDefault(); msg.clear();
+      run(add, function () { return call('users.create', { username: un.value.trim(), displayName: dn.value.trim(), role: role.value }).then(function (x) {
+        if (!x.ok) { msg.set(x.message); return; } un.value = ''; dn.value = ''; showCode('Akun dibuat', x.user.username, x.setupCode, x.validHours);
+      }); });
+    } }, h('h2', null, 'Tambah akun'), msg.node, field('Username', un, 'Huruf kecil, angka, titik, strip, garis bawah (3-30).'), field('Nama tampilan', dn), field('Peran', role), add);
+    var rows = r.users.map(function (u) {
+      var self = u.userId === S.user.userId, acts = [];
+      acts.push(btn('Ubah nama', { sm: true, icon: 'edit', onclick: function () { renameUser(u); } }));
+      if (!self) {
+        acts.push(btn(u.accountStatus === 'disabled' ? 'Aktifkan' : 'Nonaktifkan', { sm: true, kind: u.accountStatus === 'disabled' ? null : 'danger', onclick: function () {
+          var en = u.accountStatus === 'disabled';
+          confirmBox(en ? 'Aktifkan akun?' : 'Nonaktifkan akun?', en ? u.displayName + ' dapat login kembali.' : u.displayName + ' akan langsung keluar dari semua perangkat dan tidak bisa login.', en ? 'Aktifkan' : 'Nonaktifkan', !en).then(function (ok) {
+            if (ok) call('users.setEnabled', { userId: u.userId, enable: en }).then(function (x) { if (x.ok) { toast('Status akun diubah.', 'success'); refreshTab(); } else toast(x.message, 'error'); });
+          });
+        } }));
+        acts.push(btn(u.role === 'admin' ? 'Jadikan anggota' : 'Jadikan admin', { sm: true, onclick: function () {
+          var to = u.role === 'admin' ? 'anggota' : 'admin';
+          confirmBox('Ubah peran?', u.displayName + ' akan menjadi ' + (to === 'admin' ? 'Admin dengan akses penuh pengelolaan akun dan arsip' : 'Anggota biasa') + '. Sesinya akan berakhir.', 'Ubah peran', to === 'admin').then(function (ok) {
+            if (ok) call('users.setRole', { userId: u.userId, role: to }).then(function (x) { if (x.ok) { toast('Peran diubah.', 'success'); refreshTab(); } else toast(x.message, 'error'); });
+          });
+        } }));
+        if (u.accountStatus !== 'disabled') acts.push(btn('Reset kata sandi', { sm: true, icon: 'lock', onclick: function () {
+          confirmBox('Reset kata sandi?', 'Kata sandi ' + u.displayName + ' akan dihapus dan semua sesinya berakhir. Anda akan mendapat kode aktivasi baru untuk diberikan kepadanya.', 'Reset', true).then(function (ok) {
+            if (ok) call('users.resetPassword', { userId: u.userId }).then(function (x) { if (x.ok) showCode('Kode aktivasi baru', u.username, x.setupCode, x.validHours); else toast(x.message, 'error'); });
+          });
+        } }));
+      }
+      return h('div', { class: 'card row-card' }, h('div', null, h('h3', null, u.displayName + (self ? ' (Anda)' : '')),
+        h('p', { class: 'meta' }, u.username + ' \u00b7 ' + (u.role === 'admin' ? 'Admin' : 'Anggota') + (u.lastLoginAt ? ' \u00b7 login terakhir ' + fmtDateTime(u.lastLoginAt) : '')),
+        h('span', { class: 'badge ' + ACCOUNT_CLASS[u.accountStatus] }, ACCOUNT_LABEL[u.accountStatus] || u.accountStatus)), h('div', { class: 'row-actions' }, acts));
+    });
+    return h('div', null, form, h('h2', null, 'Daftar akun (' + r.users.length + ')'), rows);
+  });
+}
+function renameUser(u) {
+  var name = input('text', { value: u.displayName, maxlength: '60' }), msg = msgBox();
+  openModal({ title: 'Ubah nama', body: h('div', null, msg.node, field('Nama tampilan', name)), actions: [{ label: 'Batal', kind: 'ghost', onClick: function (m) { m.close(); } },
+    { label: 'Simpan', kind: 'primary', onClick: function (m, b) { run(b, function () { return call('users.updateName', { userId: u.userId, displayName: name.value.trim() }).then(function (x) {
+      if (!x.ok) { msg.set(x.message); return; } m.close(); toast('Nama diubah.', 'success'); refreshTab(); }); }); } }] });
+}
+
+function adminCategories() {
+  return call('categories.list', { includeInactive: true }).then(function (r) {
+    if (!r.ok) return errorBox(r, refreshTab);
+    var msg = msgBox(), nm = input('text', { maxlength: '60' }), ds = input('text', { maxlength: '300' }), add = h('button', { type: 'submit', class: 'btn primary' }, icon('plus'), 'Tambah kategori');
+    var form = h('form', { class: 'card', novalidate: true, onsubmit: function (e) {
+      e.preventDefault(); msg.clear();
+      run(add, function () { return call('categories.create', { categoryName: nm.value.trim(), description: ds.value.trim() }).then(function (x) {
+        if (!x.ok) { msg.set(x.message); return; } toast('Kategori ditambahkan.', 'success'); refreshTab(); }); });
+    } }, h('h2', null, 'Tambah kategori'), msg.node, field('Nama kategori', nm), field('Deskripsi (opsional)', ds), add);
+    var rows = r.categories.map(function (c) {
+      var on = c.activeStatus === 'active';
+      return h('div', { class: 'card row-card' }, h('div', null, h('h3', null, c.categoryName), c.description ? h('p', { class: 'meta' }, c.description) : null, h('span', { class: 'badge ' + (on ? 'aktif' : 'nonaktif') }, on ? 'Aktif' : 'Nonaktif')),
+        h('div', { class: 'row-actions' }, btn('Ubah', { sm: true, icon: 'edit', onclick: function () { editCategory(c); } }),
+          btn(on ? 'Nonaktifkan' : 'Aktifkan', { sm: true, kind: on ? 'danger' : null, onclick: function () {
+            confirmBox(on ? 'Nonaktifkan kategori?' : 'Aktifkan kategori?', on ? 'Kategori tidak lagi bisa dipilih untuk unggahan baru. Dokumen lama tetap ada.' : 'Kategori dapat dipilih kembali.', on ? 'Nonaktifkan' : 'Aktifkan', on).then(function (ok) {
+              if (ok) call('categories.setActive', { categoryId: c.categoryId, active: !on }).then(function (x) { if (x.ok) { toast('Status kategori diubah.', 'success'); refreshTab(); } else toast(x.message, 'error'); });
+            });
+          } })));
+    });
+    return h('div', null, form, h('h2', null, 'Daftar kategori (' + r.categories.length + ')'), rows);
+  });
+}
+function editCategory(c) {
+  var nm = input('text', { value: c.categoryName, maxlength: '60' }), ds = input('text', { value: c.description || '', maxlength: '300' }), msg = msgBox();
+  openModal({ title: 'Ubah kategori', body: h('div', null, msg.node, field('Nama kategori', nm), field('Deskripsi', ds)), actions: [{ label: 'Batal', kind: 'ghost', onClick: function (m) { m.close(); } },
+    { label: 'Simpan', kind: 'primary', onClick: function (m, b) { run(b, function () { return call('categories.update', { categoryId: c.categoryId, categoryName: nm.value.trim(), description: ds.value.trim() }).then(function (x) {
+      if (!x.ok) { msg.set(x.message); return; } m.close(); toast('Kategori disimpan.', 'success'); refreshTab(); }); }); } }] });
+}
+
+function adminChecks() {
+  var out = h('div'), b1 = btn('Jalankan pemeriksaan integritas', { kind: 'primary', icon: 'refresh' }), b2 = btn('Cari file yatim di Drive', { icon: 'search' });
+  b1.addEventListener('click', function () {
+    run(b1, function () {
+      clear(out); var changes = [], mism = [], checked = 0, total = 0, note = h('p', { class: 'meta', role: 'status' }, 'Memeriksa…'); out.appendChild(note);
+      function step(offset) {
+        return call('docs.integrityCheck', { offset: offset, limit: 60 }).then(function (r) {
+          if (!r.ok) { out.appendChild(h('div', { class: 'msg error', role: 'alert' }, r.message)); return; }
+          changes = changes.concat(r.changes); mism = mism.concat(r.sizeMismatch); checked += r.checked; total = r.total; note.textContent = 'Memeriksa… ' + checked + ' dari ' + total;
+          if (r.nextOffset !== null && r.checked > 0) return step(r.nextOffset);
+          note.textContent = 'Selesai: ' + checked + ' dokumen diperiksa.';
+          out.appendChild(h('div', { class: 'card' }, h('h3', null, 'Perubahan status (' + changes.length + ')'), changes.length ? h('ul', null, changes.map(function (c) { return h('li', null, c.title + ': ' + c.change); })) : h('p', { class: 'meta' }, 'Tidak ada perubahan. Semua file sesuai catatan.')));
+          if (mism.length) out.appendChild(h('div', { class: 'card' }, h('h3', null, 'Ukuran file berbeda dari catatan (' + mism.length + ')'), h('ul', null, mism.map(function (m) { return h('li', null, m.title + ': tercatat ' + fmtSize(m.recorded) + ', di Drive ' + fmtSize(m.actual)); }))));
+        });
+      }
+      return step(0);
+    });
+  });
+  b2.addEventListener('click', function () {
+    run(b2, function () { clear(out); return call('docs.findOrphans').then(function (r) {
+      if (!r.ok) { out.appendChild(h('div', { class: 'msg error', role: 'alert' }, r.message)); return; }
+      out.appendChild(h('div', { class: 'card' }, h('h3', null, 'File yatim: ' + r.orphans.length + ' (dipindai ' + r.scanned + ' file' + (r.truncated ? ', hasil terpotong' : '') + ')'),
+        h('p', { class: 'hint' }, 'Daftar ini hanya laporan. Tidak ada file yang dihapus otomatis; periksa dan tangani sendiri di Google Drive.'),
+        r.orphans.length ? h('ul', null, r.orphans.map(function (o) { return h('li', null, o.name + ' (' + fmtSize(o.size) + ') \u2013 ' + o.reason); })) : h('p', { class: 'meta' }, 'Tidak ada file yatim.')));
+    }); });
+  });
+  return h('div', null, h('div', { class: 'card' }, h('h2', null, 'Pemeriksaan data'), h('p', { class: 'meta' }, 'Memastikan setiap dokumen di daftar masih ada di folder Drive arsip, dan memulihkan unggahan yang terputus.'), h('div', { class: 'row-actions' }, b1, b2)), out);
+}
+
+function adminAudit() {
+  var holder = h('div'), page = 1;
+  function load() {
+    clear(holder); holder.appendChild(spinner());
+    return call('audit.list', { page: page, pageSize: 30 }).then(function (r) {
+      clear(holder);
+      if (!r.ok) { holder.appendChild(errorBox(r, load)); return; }
+      holder.appendChild(h('p', { class: 'meta' }, r.total + ' catatan aktivitas (terbaru di atas)'));
+      holder.appendChild(h('div', { class: 'scroll-x' }, h('table', { class: 'log' }, h('thead', null, h('tr', null, ['Waktu', 'Pelaku', 'Aksi', 'Sasaran', 'Hasil'].map(function (x) { return h('th', { scope: 'col' }, x); }))),
+        h('tbody', null, r.items.map(function (i) { return h('tr', null, h('td', null, fmtDateTime(i.timestamp)), h('td', null, i.actor), h('td', null, ACTION_LABEL[i.action] || i.action), h('td', null, i.target), h('td', null, i.result)); })))));
+      if (r.totalPages > 1) holder.appendChild(h('div', { class: 'pager' }, btn('Lebih baru', { sm: true, disabled: page <= 1, onclick: function () { page--; load(); } }), h('span', { class: 'meta' }, 'Halaman ' + r.page + ' dari ' + r.totalPages), btn('Lebih lama', { sm: true, disabled: page >= r.totalPages, onclick: function () { page++; load(); } })));
+    });
+  }
+  load(); return holder;
+}
+
+/* ===================== MULAI ===================== */
+function boot() {
+  window.__osisBooted = true;   // dibaca penampil galat di Index.html
+  function tanpaSesi(notice) { S.token = null; store.clear(); S.notice = notice || ''; render(); }
+  function coba() {   // belum ada sesi aktif: sambung dari token perangkat jika ada
+    if (!devStore.get()) { tanpaSesi(''); return; }
+    resumeOnce().then(function (ok) { if (ok) render(); else tanpaSesi(devStore.get() ? '' : 'Sesi perangkat berakhir. Silakan login.'); });
+  }
+  var t = store.get();
+  if (!t) { coba(); return; }
+  S.token = t;
+  raw('auth.me', {}).then(function (r) {
+    if (r.ok) { S.user = r.user; render(); } else coba();
+  });
+}
+window.__osisParts = (window.__osisParts || '') + 'E';
+/* AKHIR ScriptsE: jika baris ini tidak terlihat di akhir berkas, tempelannya terpotong. */
+</script>

@@ -1,0 +1,229 @@
+<script data-bagian="C">
+'use strict';
+/* OSIS Archive: skrip bagian 3 dari 5. Berkas ini DIAWALI tag script dan DIAKHIRI tag penutup script: jangan dihapus. Semua bagian ScriptsA-ScriptsE wajib ada. */
+/* ===== Pratinjau layar penuh (seperti Google Drive) ===== */
+/* PDF dirender oleh pdf.js di dalam iframe TERISOLASI (sandbox="allow-scripts" tanpa allow-same-origin): kode dari internet itu tidak
+ * dapat membaca token, penyimpanan, atau memanggil server aplikasi. Data PDF dikirim lewat postMessage; hasilnya digambar di iframe itu. */
+var PDFJS_BASE = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@5.6.205/legacy/build/';
+var VIEWER_SRCDOC = [
+  '<!DOCTYPE html><html lang="id"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">',
+  '<style>html,body{margin:0;background:#525659}#pages{display:flex;flex-direction:column;align-items:center;gap:8px;padding:8px}canvas{background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.5)}</style></head>',
+  '<body><div id="pages"></div><script type="module">',
+  'var P = window.parent, BASE = "' + PDFJS_BASE + '";',
+  'function send(m) { P.postMessage(m, "*"); }',
+  'function pesan(err) { return String((err && err.message) || err); }',
+  'async function gambar(lib, buf) {',
+  '  var pdf = await lib.getDocument({ data: new Uint8Array(buf) }).promise, n = pdf.numPages;',
+  '  send({ type: "pages", n: n });',
+  '  var box = document.getElementById("pages"), W = Math.min(window.innerWidth - 16, 900), dpr = Math.min(window.devicePixelRatio || 1, 2);',
+  '  var p1 = await pdf.getPage(1), v1 = p1.getViewport({ scale: 1 }), sc = W / v1.width, slots = [], i;',
+  '  for (i = 1; i <= n; i++) {',
+  '    var c = document.createElement("canvas");',
+  '    c.width = Math.floor(W * dpr); c.height = Math.floor(v1.height * sc * dpr);',
+  '    c.style.width = W + "px"; c.style.height = Math.floor(v1.height * sc) + "px"; c.setAttribute("data-p", String(i));',
+  '    box.appendChild(c); slots.push(c);',
+  '  }',
+  '  async function draw(k, cv) {',
+  '    var pg = await pdf.getPage(k), vp = pg.getViewport({ scale: sc * dpr });',
+  '    cv.width = Math.floor(vp.width); cv.height = Math.floor(vp.height);',
+  '    cv.style.width = Math.floor(vp.width / dpr) + "px"; cv.style.height = Math.floor(vp.height / dpr) + "px";',
+  '    await pg.render({ canvasContext: cv.getContext("2d"), canvas: cv, viewport: vp }).promise;',
+  '    cv.setAttribute("data-done", "1");',
+  '    if (k === 1) send({ type: "ready" });',
+  '  }',
+  '  var obs = new IntersectionObserver(function (es) {',
+  '    es.forEach(function (en) {',
+  '      if (!en.isIntersecting) return;',
+  '      obs.unobserve(en.target);',
+  '      draw(Number(en.target.getAttribute("data-p")), en.target).catch(function (err) { send({ type: "error", code: "RENDER", message: pesan(err) }); });',
+  '    });',
+  '  }, { rootMargin: "800px" });',
+  '  slots.forEach(function (cv) { obs.observe(cv); });',
+  '}',
+  '(async function () {',
+  '  var lib;',
+  '  try { lib = await import(BASE + "pdf.min.mjs"); } catch (e) { send({ type: "error", code: "CDN", message: pesan(e) }); return; }',
+  '  var ws = BASE + "pdf.worker.min.mjs";',
+  '  try { var rr = await fetch(ws); ws = URL.createObjectURL(new Blob([await rr.blob()], { type: "text/javascript" })); } catch (e) {}',
+  '  lib.GlobalWorkerOptions.workerSrc = ws;',
+  '  window.addEventListener("message", function (e) {',
+  '    if (e.source !== P) return;',
+  '    var d = e.data;',
+  '    if (!d || d.type !== "pdf" || !(d.buffer instanceof ArrayBuffer)) return;',
+  '    gambar(lib, d.buffer).catch(function (err) { send({ type: "error", code: "RENDER", message: pesan(err) }); });',
+  '  });',
+  '  send({ type: "init" });',
+  '})();',
+  '<\/script></body></html>'
+].join('\n');
+
+function b64ToBytes(b64) {
+  var bin = atob(b64), n = bin.length, bytes = new Uint8Array(n);
+  for (var i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+function saveBlobUrl(url, name) { var a = h('a', { href: url, download: name }); document.body.appendChild(a); a.click(); a.remove(); }
+
+// Iframe terisolasi untuk PDF. onState({pages}|{ready}|{error}). Mengembalikan {node, destroy}.
+function pdfFrame(buffer, onState) {
+  var frame = h('iframe', { class: 'viewer-frame', title: 'Pratinjau PDF', sandbox: 'allow-scripts' }), done = false, timer;
+  function onMsg(e) {
+    if (e.source !== frame.contentWindow || !e.data || typeof e.data !== 'object') return;
+    var m = e.data;
+    if (m.type === 'init') frame.contentWindow.postMessage({ type: 'pdf', buffer: buffer }, '*', [buffer]);
+    else if (m.type === 'pages') onState({ pages: Number(m.n) || 0 });
+    else if (m.type === 'ready' && !done) { done = true; clearTimeout(timer); onState({ ready: true }); }
+    else if (m.type === 'error' && !done) { done = true; clearTimeout(timer); onState({ error: String(m.code || 'GALAT') }); }
+  }
+  window.addEventListener('message', onMsg);
+  frame.srcdoc = VIEWER_SRCDOC;
+  timer = setTimeout(function () { if (!done) { done = true; onState({ error: 'WAKTU' }); } }, 20000);
+  return { node: frame, destroy: function () { window.removeEventListener('message', onMsg); clearTimeout(timer); frame.removeAttribute('srcdoc'); } };
+}
+
+function openViewer(d) {
+  var url = null, frameObj = null, zoomIdx = 0, ZOOMS = [100, 150, 200, 300], closed = false;
+  var body = h('div', { class: 'viewer' }, spinner('Memuat pratinjau…'));
+  function cleanup() { closed = true; if (frameObj) frameObj.destroy(); if (url) URL.revokeObjectURL(url); }
+  var m = openModal({ title: d.title, full: true, body: body, onClose: cleanup, actions: [
+    { label: 'Unduh', kind: 'primary', onClick: function (mm, b) { if (url && d.fileType) saveBlobUrl(url, d.originalFileName || d.title); else openDoc(d, 'download', b); } },
+    { label: 'Detail', onClick: function () { showDetail(d.documentId, null); } },
+    { label: 'Tutup', kind: 'ghost', onClick: function (mm) { mm.close(); } }] });
+  function show(node) { if (!closed) { clear(body); body.appendChild(node); } }
+  function note(t) { return h('p', { class: 'hint viewer-note' }, t); }
+  function fetchFile() {
+    return call('docs.open', { documentId: d.documentId }).then(function (r) {
+      if (closed) return null;
+      if (!r.ok) { m.close(); toast(r.message || 'File tidak dapat dibuka.', 'error'); return null; }
+      return r;
+    });
+  }
+  function image() {
+    fetchFile().then(function (r) {
+      if (!r) return; url = URL.createObjectURL(b64ToBlob(r.base64, r.mimeType));
+      var img = h('img', { class: 'viewer-img', src: url, alt: d.title }), zin, zout;
+      function apply() { img.style.width = ZOOMS[zoomIdx] + '%'; zin.disabled = zoomIdx === ZOOMS.length - 1; zout.disabled = zoomIdx === 0; }
+      zout = btn('', { sm: true, icon: 'zoomOut', aria: 'Perkecil', onclick: function () { if (zoomIdx > 0) { zoomIdx--; apply(); } } });
+      zin = btn('', { sm: true, icon: 'zoomIn', aria: 'Perbesar', onclick: function () { if (zoomIdx < ZOOMS.length - 1) { zoomIdx++; apply(); } } });
+      var fit = btn('Pas layar', { sm: true, onclick: function () { zoomIdx = 0; apply(); } });
+      show(h('div', null, h('div', { class: 'viewer-ctl' }, zout, zin, fit), h('div', { class: 'viewer-scroll' }, img))); apply();
+    });
+  }
+  function pdf() {
+    fetchFile().then(function (r) {
+      if (!r) return;
+      var bytes = b64ToBytes(r.base64); url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+      var info = h('span', { class: 'meta', role: 'status' }), wrap = h('div', { class: 'viewer-pdf' });
+      frameObj = pdfFrame(bytes.buffer.slice(0), function (s) {
+        if (closed) return;
+        if (s.pages) info.textContent = s.pages + ' halaman';
+        if (s.ready) wrap.classList.add('ready');
+        if (s.error) {
+          if (frameObj) frameObj.destroy(); frameObj = null;
+          show(h('div', { class: 'viewer-fallback' }, note('Pratinjau PDF belum bisa ditampilkan di perangkat ini (' + s.error + '). Anda masih bisa membukanya di bawah atau mengunduhnya.'),
+            h('iframe', { class: 'viewer-frame', src: url, title: 'Pratinjau ' + d.title }), btn('Unduh PDF', { kind: 'primary', icon: 'download', onclick: function () { saveBlobUrl(url, d.originalFileName || d.title); } })));
+        }
+      });
+      wrap.appendChild(h('div', { class: 'viewer-wait' }, spinner('Menyiapkan halaman…'))); wrap.appendChild(frameObj.node);
+      show(h('div', null, h('div', { class: 'viewer-ctl' }, info), wrap));
+    });
+  }
+  function thumbOnly() {   // Word/Excel/PowerPoint: halaman pertama dari Drive (tanpa mengunduh file penuh)
+    thumbFetch(d.documentId).then(function (u) {
+      var kids = [];
+      if (u) kids.push(h('img', { class: 'viewer-thumb', src: u, alt: 'Halaman pertama ' + d.title }));
+      else kids.push(h('div', { class: 'doc-ico big', 'aria-hidden': 'true' }, typeLabel(d.fileType)));
+      kids.push(note((u ? 'Pratinjau halaman pertama. ' : 'Gambar pratinjau belum tersedia dari Google Drive. ') + typeLabel(d.fileType) + ' belum dapat ditampilkan penuh di sini; gunakan Unduh untuk membuka seluruh isinya.'));
+      show(h('div', { class: 'viewer-center' }, kids));
+    });
+  }
+  if (d.fileType === 'jpg' || d.fileType === 'png') image(); else if (d.fileType === 'pdf') pdf(); else thumbOnly();
+}
+
+function b64ToBlob(b64, mime) {
+  var bin = atob(b64), n = bin.length, bytes = new Uint8Array(n);
+  for (var i = 0; i < n; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+function openDoc(d, mode, button) {
+  var go1 = function () {
+    var wait = toast('Mengambil file…');
+    return call('docs.open', { documentId: d.documentId }).then(function (r) {
+      dismissToast(wait);
+      if (!r.ok) { toast(r.message || 'File tidak dapat dibuka.', 'error'); return; }
+      var blob = b64ToBlob(r.base64, r.mimeType), url = URL.createObjectURL(blob);
+      if (mode === 'download' || !(d.fileType === 'jpg' || d.fileType === 'png' || d.fileType === 'pdf')) {
+        var a = h('a', { href: url, download: r.fileName }); document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { URL.revokeObjectURL(url); }, 30000); toast('File diunduh.', 'success'); return;
+      }
+      var body = d.fileType === 'pdf'
+        ? h('div', { class: 'preview' }, h('iframe', { src: url, title: 'Pratinjau ' + d.title }), h('p', { class: 'hint' }, 'Jika pratinjau tidak tampil di perangkat Anda, gunakan tombol Unduh.'))
+        : h('div', { class: 'preview' }, h('img', { src: url, alt: d.title }));
+      openModal({ title: d.title, wide: true, body: body, onClose: function () { URL.revokeObjectURL(url); }, actions: [
+        { label: 'Unduh', kind: 'primary', onClick: function () { var a = h('a', { href: url, download: r.fileName }); document.body.appendChild(a); a.click(); a.remove(); } },
+        { label: 'Tutup', kind: 'ghost', onClick: function (m) { m.close(); } }] });
+    });
+  };
+  return button ? run(button, go1) : go1();
+}
+
+function showDetail(documentId, ctx) {
+  call('docs.get', { documentId: documentId }).then(function (r) {
+    if (!r.ok) { toast(r.message || 'Dokumen tidak ditemukan.', 'error'); return; }
+    var d = r.document, isAdmin = S.user.role === 'admin', mine = d.uploadedBy === S.user.userId;
+    var rows = [['Kategori', d.categoryName], ['Tahun', d.year], ['Kegiatan', d.activityName], ['Tanggal dokumen', d.documentDate ? fmtDate(d.documentDate + 'T00:00:00') : ''], ['Kata kunci', d.keywords], ['Deskripsi', d.description],
+      ['Nama file asli', d.originalFileName], ['Jenis / ukuran', typeLabel(d.fileType) + ' \u00b7 ' + fmtSize(d.fileSize)], ['Diunggah oleh', d.uploaderName], ['Waktu unggah', fmtDateTime(d.uploadedAt)], ['Status file', STATUS_LABEL[d.fileStatus] || d.fileStatus]];
+    if (r.admin) rows.push(['ID file Drive (admin)', r.admin.driveFileId]);
+    var pv = h('div', { class: 'detail-thumb' });
+    if (d.fileStatus === 'tersedia') thumbFetch(d.documentId).then(function (url) { if (url) { pv.appendChild(h('img', { src: url, alt: 'Pratinjau halaman pertama' })); } });
+    var dl = h('dl', { class: 'dl' }); rows.forEach(function (x) { if (x[1] !== '' && x[1] !== undefined) { dl.appendChild(h('dt', null, x[0])); dl.appendChild(h('dd', null, String(x[1]))); } });
+    var actions = [];
+    if (d.fileStatus === 'tersedia') {
+      actions.push({ label: 'Lihat', kind: 'primary', onClick: function () { openViewer(d); } });
+      actions.push({ label: 'Unduh', onClick: function () { openDoc(d, 'download'); } });
+    }
+    if ((isAdmin || mine) && (d.fileStatus === 'tersedia' || d.fileStatus === 'hilang')) actions.push({ label: 'Ubah metadata', onClick: function (m) { m.close(); editDoc(d, ctx); } });
+    if (isAdmin && d.fileStatus !== 'dihapus') actions.push({ label: 'Hapus', kind: 'danger', onClick: function (m) {
+      confirmBox('Hapus dokumen?', 'Dokumen "' + d.title + '" akan disembunyikan dari arsip dan filenya dipindahkan ke Sampah Drive (masih dapat dipulihkan dari Drive). Lanjutkan?', 'Ya, hapus', true).then(function (ok) {
+        if (!ok) return;
+        call('docs.remove', { documentId: d.documentId }).then(function (x) { if (x.ok) { m.close(); toast('Dokumen dihapus.', 'success'); if (ctx && ctx.onChanged) ctx.onChanged(); } else toast(x.message, 'error'); });
+      });
+    } });
+    actions.push({ label: 'Tutup', kind: 'ghost', onClick: function (m) { m.close(); } });
+    openModal({ title: d.title, body: h('div', null, pv, dl), actions: actions });
+  });
+}
+
+/* ----- formulir metadata (dipakai unggah & ubah) ----- */
+function metaForm(init, cats, activities) {
+  init = init || {};
+  var title = input('text', { value: init.title || '', maxlength: '150', required: true });
+  var opts = [['', 'Pilih kategori…']].concat(cats.map(function (c) { return [c.categoryId, c.categoryName + (c.activeStatus === 'inactive' ? ' (nonaktif)' : '')]; }));
+  var cat = select(opts, init.categoryId || '', { required: true });
+  var year = input('number', { value: String(init.year || CURRENT_YEAR), min: '1990', max: String(CURRENT_YEAR + 1), inputmode: 'numeric' });
+  var listId = 'act' + (++uid), act = input('text', { value: init.activityName || '', maxlength: '100', list: listId });
+  var dlist = h('datalist', { id: listId }, (activities || []).map(function (a) { return h('option', { value: a }); }));
+  var date = input('date', { value: init.documentDate || '' });
+  var desc = h('textarea', { class: 'input', maxlength: '500' }); desc.value = init.description || '';
+  var kw = input('text', { value: init.keywords || '', maxlength: '300' });
+  var node = h('div', null,
+    field('Judul dokumen', title, null, true), field('Kategori', cat, null, true),
+    h('div', { class: 'grid', style: 'grid-template-columns:1fr 1fr' }, field('Tahun', year, null, true), field('Tanggal dokumen (opsional)', date)),
+    field('Kegiatan terkait (opsional)', act), dlist, field('Deskripsi (opsional)', desc), field('Kata kunci (opsional)', kw, 'Pisahkan dengan koma, maksimal 10.'));
+  var byName = { title: title, cat: cat, year: year, act: act, date: date, desc: desc, kw: kw };
+  return { node: node,
+    get: function (k) { return byName[k].value.trim(); }, set: function (k, v) { byName[k].value = v; },
+    validate: function () {
+      var t = title.value.trim(), y = parseInt(year.value, 10);
+      if (t.length < 3) return 'Judul minimal 3 karakter.';
+      if (/^[=+\-@]/.test(t)) return 'Judul tidak boleh diawali karakter = + - atau @.';
+      if (!cat.value) return 'Pilih kategori.';
+      if (!(y >= 1990 && y <= CURRENT_YEAR + 1)) return 'Tahun harus antara 1990 dan ' + (CURRENT_YEAR + 1) + '.';
+      if (kw.value.split(/[,;]+/).filter(function (x) { return x.trim(); }).length > 10) return 'Maksimal 10 kata kunci.';
+      return '';
+    },
+    read: function () { return { title: title.value.trim(), categoryId: cat.value, year: parseInt(year.value, 10), activityName: act.value.trim(), documentDate: date.value, description: desc.value.trim(), keywords: kw.value.trim() }; } };
+}
+window.__osisParts = (window.__osisParts || '') + 'C';
+/* AKHIR ScriptsC: jika baris ini tidak terlihat di akhir berkas, tempelannya terpotong. */
+</script>

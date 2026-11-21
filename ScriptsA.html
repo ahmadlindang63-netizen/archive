@@ -1,0 +1,233 @@
+<script data-bagian="A">
+'use strict';
+/* OSIS Archive: skrip bagian 1 dari 5. Berkas ini DIAWALI tag script dan DIAKHIRI tag penutup script: jangan dihapus. Semua bagian ScriptsA-ScriptsE wajib ada. */
+/* ===== OSIS Archive: sisi klien =====
+ * Aturan keamanan:
+ *  - Semua data dari server disisipkan lewat textContent / createTextNode (helper h()). TIDAK ADA innerHTML
+ *    untuk data apa pun; innerHTML hanya dipakai untuk ikon SVG konstan.
+ *  - Kata sandi tidak pernah dikirim: browser mengirim hasil PBKDF2 (Web Crypto).
+ *  - Validasi di sini hanya kenyamanan; server memvalidasi ulang semuanya.
+ *  - Token sesi hanya di sessionStorage (hilang saat tab ditutup), tidak pernah di localStorage.
+ */
+
+var MIN_PW = 10, MAX_FILE = 10 * 1024 * 1024, EXT_OK = ['pdf', 'docx', 'xlsx', 'pptx', 'jpg', 'jpeg', 'png'];
+var CURRENT_YEAR = new Date().getFullYear();
+var WEAK = ['password', 'katasandi', 'kata sandi', '12345678', '123456789', 'qwertyuiop', 'osis12345', 'osisosis', 'admin12345', 'abcdefghij'];
+var STATUS_LABEL = { tersedia: 'Tersedia', memproses: 'Diproses', gagal: 'Gagal', hilang: 'File hilang', dihapus: 'Dihapus' };
+var ACCOUNT_LABEL = { active: 'Aktif', pending: 'Menunggu aktivasi', disabled: 'Nonaktif' };
+var ACCOUNT_CLASS = { active: 'aktif', pending: 'pending', disabled: 'nonaktif' };
+var ACTION_LABEL = { login: 'Login', logout: 'Logout', aktivasi_akun: 'Aktivasi akun', ganti_sandi: 'Ganti kata sandi', terbit_kode_aktivasi: 'Kode aktivasi diterbitkan', buat_akun: 'Buat akun', nonaktifkan_akun: 'Nonaktifkan akun', aktifkan_akun: 'Aktifkan akun', ubah_peran: 'Ubah peran', ubah_nama: 'Ubah nama', ubah_nama_sendiri: 'Ubah nama sendiri', buat_kategori: 'Buat kategori', ubah_kategori: 'Ubah kategori', nonaktifkan_kategori: 'Nonaktifkan kategori', aktifkan_kategori: 'Aktifkan kategori', unggah_dokumen: 'Unggah dokumen', ubah_metadata: 'Ubah metadata', hapus_dokumen: 'Hapus dokumen', cek_integritas: 'Pemeriksaan integritas', cari_file_yatim: 'Cari file yatim', file_hilang: 'File hilang terdeteksi', bootstrap_admin: 'Buat admin pertama', ingat_perangkat: 'Ingat perangkat', cabut_perangkat: 'Cabut semua perangkat', perangkat_dicabut_curiga: 'Perangkat dicabut (token dipakai ulang)', cadangan_database: 'Cadangan database' };
+
+var S = { token: null, user: null, route: 'dashboard', nav: 0, filters: { all: {}, mine: {}, admin: {} }, notice: '', authView: 'login', mainEl: null };
+var uid = 0;
+
+/* ---------- penyimpanan token ---------- */
+var memTok = null;
+var store = {
+  get: function () { try { return window.sessionStorage.getItem('osis_t') || memTok; } catch (e) { return memTok; } },
+  set: function (v) { memTok = v; try { window.sessionStorage.setItem('osis_t', v); } catch (e) {} },
+  clear: function () { memTok = null; try { window.sessionStorage.removeItem('osis_t'); } catch (e) {} }
+};
+
+/* Token perangkat ("ingat saya"): SATU-SATUNYA data di localStorage. Opsional (dicentang pengguna), 64 hex acak, berotasi tiap dipakai,
+ * hanya hash-nya di server, dapat dicabut (Keluar / Profil > Keluar dari semua perangkat / ganti sandi). */
+var devStore = {
+  get: function () { try { var v = window.localStorage.getItem('osis_d'); return /^[0-9a-f]{64}$/.test(v || '') ? v : null; } catch (e) { return null; } },
+  set: function (v) { try { window.localStorage.setItem('osis_d', v); return window.localStorage.getItem('osis_d') === v; } catch (e) { return false; } },
+  clear: function () { try { window.localStorage.removeItem('osis_d'); } catch (e) {} }
+};
+var REMEMBER_DEFAULT = false;   // true = kotak "Ingat saya" tercentang bawaan
+
+/* ---------- DOM ---------- */
+var ICONS = {
+  home: 'M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-7h-6v7H4a1 1 0 0 1-1-1z', search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3',
+  folder: 'M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z', upload: 'M12 16V4m0 0l-4 4m4-4l4 4M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3',
+  file: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5', user: 'M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21a8 8 0 0 1 16 0',
+  shield: 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z', logout: 'M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9', plus: 'M12 5v14M5 12h14',
+  check: 'M5 12l5 5 9-10', x: 'M6 6l12 12M18 6L6 18', alert: 'M12 9v4m0 4h.01M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+  download: 'M12 4v12m0 0l-4-4m4 4l4-4M4 20h16', eye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  edit: 'M4 20h4L19 9l-4-4L4 16zM14 6l4 4', trash: 'M4 7h16M10 11v6m4-6v6M6 7l1 13h10l1-13M9 7V4h6v3', lock: 'M6 11h12v10H6zM8 11V7a4 4 0 0 1 8 0v4',
+  refresh: 'M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5', back: 'M15 18l-6-6 6-6', zoomIn: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3M11 8v6M8 11h6', zoomOut: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16zM21 21l-4.3-4.3M8 11h6', list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01', grid: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z', menu: 'M4 6h16M4 12h16M4 18h16', copy: 'M9 9h11v11H9zM5 15V5h10'
+};
+function icon(name) {
+  var t = document.createElement('template');
+  t.innerHTML = '<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="' + (ICONS[name] || '') + '"/></svg>';   // konstan, bukan data pengguna
+  return t.content.firstChild;
+}
+function append(el, c) {
+  if (c === null || c === undefined || c === false) return;
+  if (Array.isArray(c)) { c.forEach(function (x) { append(el, x); }); return; }
+  el.appendChild(c.nodeType ? c : document.createTextNode(String(c)));
+}
+function h(tag, attrs) {
+  var el = document.createElement(tag), pending;
+  if (attrs) Object.keys(attrs).forEach(function (k) {
+    var v = attrs[k];
+    if (v === null || v === undefined || v === false) return;
+    if (k === 'class') el.className = v;
+    else if (k === 'value') pending = v;
+    else if (k.slice(0, 2) === 'on' && typeof v === 'function') el.addEventListener(k.slice(2), v);
+    else if (k === 'checked' || k === 'disabled' || k === 'selected') el[k] = !!v;
+    else el.setAttribute(k, v === true ? '' : String(v));
+  });
+  for (var i = 2; i < arguments.length; i++) append(el, arguments[i]);
+  if (pending !== undefined) el.value = pending;
+  return el;
+}
+function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+function btn(label, o) {
+  o = o || {};
+  return h('button', { type: o.type || 'button', class: 'btn' + (o.kind ? ' ' + o.kind : '') + (o.sm ? ' sm' : '') + (o.lg ? ' lg' : ''), onclick: o.onclick, 'aria-label': o.aria, disabled: o.disabled }, o.icon ? icon(o.icon) : null, label);
+}
+function spinner(text) { return h('div', { class: 'empty', role: 'status' }, h('span', { class: 'spinner' }), ' ', text || 'Memuat…'); }
+function toast(msg, kind) {
+  var box = document.getElementById('toasts');
+  while (box.children.length >= 3) box.removeChild(box.firstChild);   // jangan menumpuk
+  var t = h('div', { class: 'toast ' + (kind || 'info'), role: kind === 'error' ? 'alert' : 'status' }, msg);
+  box.appendChild(t);
+  setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, kind === 'error' ? 7000 : 4000);
+  return t;
+}
+function dismissToast(t) { if (t && t.parentNode) t.parentNode.removeChild(t); }
+function msgBox() {
+  var n = h('div', { class: 'msg', role: 'alert', hidden: true });
+  return { node: n,
+    set: function (text, kind) { n.className = 'msg ' + (kind || 'error'); n.textContent = text; n.hidden = false; n.setAttribute('role', kind === 'error' || !kind ? 'alert' : 'status'); },
+    clear: function () { n.hidden = true; n.textContent = ''; } };
+}
+function field(label, input, hint, required) {
+  var id = input.id || (input.id = 'f' + (++uid));
+  if (hint) { var hid = id + 'h'; input.setAttribute('aria-describedby', hid); }
+  return h('div', { class: 'field' }, h('label', { for: id }, label, required ? h('span', { class: 'req', 'aria-hidden': 'true' }, ' *') : null), input, hint ? h('p', { class: 'hint', id: id + 'h' }, hint) : null);
+}
+function input(type, o) { return h('input', Object.assign({ type: type, class: 'input' }, o || {})); }
+function select(options, value, o) {
+  var s = h('select', Object.assign({ class: 'input' }, o || {}));
+  options.forEach(function (op) { s.appendChild(h('option', { value: op[0] }, op[1])); });
+  s.value = value === undefined || value === null ? '' : String(value);
+  return s;
+}
+function pwField(label, o) {
+  var inp = input('password', o), wrap, tog;
+  tog = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Tampilkan kata sandi', onclick: function () {
+    var show = inp.type === 'password'; inp.type = show ? 'text' : 'password'; tog.setAttribute('aria-label', show ? 'Sembunyikan kata sandi' : 'Tampilkan kata sandi');
+  } }, icon('eye'));
+  wrap = h('div', { class: 'pw' }, inp, tog);
+  return { input: inp, node: h('div', { class: 'field' }, h('label', { for: inp.id || (inp.id = 'f' + (++uid)) }, label), wrap) };
+}
+function run(button, fn) {   // cegah klik ganda: tombol dinonaktifkan sampai selesai
+  if (button.disabled) return Promise.resolve();
+  button.disabled = true; button.classList.add('busy'); button.setAttribute('aria-busy', 'true');
+  var done = function () { button.disabled = false; button.classList.remove('busy'); button.removeAttribute('aria-busy'); };
+  return Promise.resolve().then(fn).then(function (v) { done(); return v; }, function (e) { done(); throw e; });
+}
+
+/* ---------- modal ---------- */
+var modals = [];
+function openModal(opt) {
+  var opener = document.activeElement, tid = 'mt' + (++uid), closed = false;
+  var foot = h('div', { class: 'modal-foot' });
+  var dlg = h('div', { class: 'modal' + (opt.wide ? ' wide' : '') + (opt.full ? ' full' : ''), role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': tid, tabindex: '-1' },
+    h('div', { class: 'modal-head' }, h('h2', { id: tid }, opt.title), h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Tutup', onclick: function () { api.close(); } }, icon('x'))),
+    h('div', { class: 'modal-body' }, opt.body), foot);
+  var back = h('div', { class: 'backdrop', onmousedown: function (e) { if (e.target === back && !opt.persistent) api.close(); } }, dlg);
+  var api = { dlg: dlg, foot: foot, close: function () {
+    if (closed) return; closed = true;
+    document.removeEventListener('keydown', onKey, true); modals = modals.filter(function (m) { return m !== api; });
+    if (back.parentNode) back.parentNode.removeChild(back);
+    if (!modals.length) document.body.classList.remove('modal-open');
+    if (opt.onClose) opt.onClose();
+    if (opener && opener.focus && document.body.contains(opener)) opener.focus();
+  } };
+  (opt.actions || []).forEach(function (a) { foot.appendChild(btn(a.label, { kind: a.kind, onclick: function (e) { a.onClick(api, e.currentTarget); } })); });
+  function onKey(e) {
+    if (modals[modals.length - 1] !== api) return;
+    if (e.key === 'Escape' && !opt.persistent) { e.stopPropagation(); api.close(); return; }
+    if (e.key === 'Tab') {
+      var f = dlg.querySelectorAll('a[href],button:not([disabled]),input:not([disabled]),select,textarea,[tabindex="0"]');
+      if (!f.length) return;
+      var first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  }
+  document.addEventListener('keydown', onKey, true);
+  modals.push(api); document.body.appendChild(back); document.body.classList.add('modal-open');
+  var focusEl = dlg.querySelector('.modal-body input,.modal-body select,.modal-body textarea,.modal-body button') || dlg;
+  focusEl.focus();
+  return api;
+}
+function closeAllModals() { modals.slice().forEach(function (m) { m.close(); }); }
+function confirmBox(title, message, label, danger) {
+  return new Promise(function (resolve) {
+    var done = false;
+    openModal({ title: title, body: h('p', null, message), onClose: function () { if (!done) resolve(false); }, actions: [
+      { label: 'Batal', kind: 'ghost', onClick: function (m) { done = true; m.close(); resolve(false); } },
+      { label: label || 'Ya, lanjutkan', kind: danger ? 'danger' : 'primary', onClick: function (m) { done = true; m.close(); resolve(true); } }] });
+  });
+}
+
+/* ---------- format ---------- */
+function fmtSize(n) { n = Number(n) || 0; if (n < 1024) return n + ' B'; if (n < 1048576) return Math.round(n / 1024) + ' KB'; return (n / 1048576).toFixed(1).replace('.', ',') + ' MB'; }
+function fmtDate(iso) { var d = new Date(iso); return (!iso || isNaN(d)) ? '' : d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }); }
+function fmtDateTime(iso) { var d = new Date(iso); return (!iso || isNaN(d)) ? '' : d.toLocaleString('id-ID', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+function typeLabel(t) { return { pdf: 'PDF', docx: 'DOCX', xlsx: 'XLSX', pptx: 'PPTX', jpg: 'JPG', png: 'PNG' }[t] || String(t || '').toUpperCase(); }
+
+/* ---------- API ---------- */
+function raw(action, payload) {
+  return new Promise(function (resolve) {
+    google.script.run
+      .withSuccessHandler(function (res) {
+        if (!res || typeof res !== 'object') res = { ok: false, code: 'GALAT_SERVER', message: 'Respons server tidak valid.' };
+        resolve(res);
+      })
+      .withFailureHandler(function () { resolve({ ok: false, code: 'JARINGAN', message: 'Koneksi bermasalah atau server sibuk. Coba lagi sebentar lagi.' }); })
+      .api(action, S.token || null, payload || {});
+  });
+}
+function applyDevice(r) {   // simpan token perangkat baru (hasil rotasi / login "ingat saya")
+  if (r && r.device && r.device.token) { if (!devStore.set(r.device.token)) toast('Perangkat ini tidak mendukung "ingat saya".', 'info'); }
+  else if (r && r.deviceDenied) toast('"Ingat saya" tidak berlaku untuk akun ini (demi keamanan).', 'info');
+}
+function resumeOnce() {   // satu permintaan lanjut-sesi pada satu waktu
+  if (!S.resuming) {
+    S.resuming = raw('auth.resume', { deviceToken: devStore.get() }).then(function (r) {
+      S.resuming = null;
+      if (r.ok) { S.token = r.token; S.user = r.user; store.set(r.token); applyDevice(r); return true; }
+      if (r.code === 'RESUME_GAGAL') devStore.clear();
+      return false;
+    });
+  }
+  return S.resuming;
+}
+function call(action, payload) {
+  return raw(action, payload).then(function (res) {
+    if (res.ok === false && res.code === 'SESI_BERAKHIR' && S.user) {
+      if (action.indexOf('auth.') !== 0 && devStore.get()) {   // perangkat diingat: sambung sesi diam-diam lalu ulangi sekali
+        return resumeOnce().then(function (ok) {
+          if (!ok) { handleExpired(); return res; }
+          return raw(action, payload).then(function (res2) { if (res2.ok === false && res2.code === 'SESI_BERAKHIR') handleExpired(); return res2; });
+        });
+      }
+      handleExpired();
+    }
+    return res;
+  });
+}
+function handleExpired() { endSession('Sesi berakhir. Silakan login lagi.'); }
+function endSession(notice) { closeAllModals(); thumbCache = {}; thumbQueue = []; S.user = null; S.token = null; store.clear(); S.notice = notice || ''; S.authView = 'login'; render(); }
+
+/* ---------- kripto: PBKDF2 di browser (kontrak: lihat Auth.gs) ---------- */
+function hexToBytes(hex) { var a = new Uint8Array(hex.length / 2); for (var i = 0; i < a.length; i++) a[i] = parseInt(hex.substr(i * 2, 2), 16); return a; }
+function bytesToHex(buf) { return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join(''); }
+function safeIter(n) { n = Number(n); if (!(n >= 100000 && n <= 2000000)) throw new Error('ITER'); return n; }
+function deriveKey(password, saltHex, iterations) {
+  if (!(window.crypto && window.crypto.subtle)) return Promise.reject(new Error('NO_CRYPTO'));
+  var raw = new TextEncoder().encode(password.normalize('NFKC'));
+  return window.crypto.subtle.importKey('raw', raw, 'PBKDF2', false, ['deriveBits']).then(function (k) {
+    return window.crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: hexToBytes(saltHex), iterations: safeIter(iterations) }, k, 256);
+  }).then(bytesToHex);
+}
+window.__osisParts = (window.__osisParts || '') + 'A';
+/* AKHIR ScriptsA: jika baris ini tidak terlihat di akhir berkas, tempelannya terpotong. */
+</script>

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<title>OSIS Archive</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+<?!= include_('Styles') ?>
+</head>
+<body>
+<a class="skip-link" href="#main">Lewati ke konten</a>
+<noscript><p style="padding:1rem">OSIS Archive membutuhkan JavaScript. Aktifkan JavaScript di browser Anda.</p></noscript>
+<div id="app" class="app"><p style="padding:2rem;text-align:center">Memuat…</p></div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<script>
+(function () {   // Penampil galat: jika skrip gagal/terpotong, tampilkan berkas, baris, dan penyebabnya (bukan "Memuat..." selamanya)
+  var shown = false;
+  function show(t) {
+    if (shown || window.__osisBooted) return; shown = true;
+    var a = document.getElementById('app'); if (!a) return;
+    while (a.firstChild) a.removeChild(a.firstChild);
+    var d = document.createElement('div'); d.style.cssText = 'padding:1.2rem;max-width:560px;margin:0 auto';
+    var h = document.createElement('h1'); h.style.fontSize = '1.2rem'; h.textContent = 'Aplikasi belum bisa dimulai';
+    var p = document.createElement('p'); p.textContent = t;
+    var q = document.createElement('p'); q.textContent = 'Muat ulang halaman. Jika sama lagi, kirim tangkapan layar ini ke pengelola. Kemungkinan penyebab: salah satu berkas ScriptsA sampai Scripts' + (window.__osisExpect ? window.__osisExpect.charAt(window.__osisExpect.length - 1) : 'E') + ' belum lengkap atau belum disimpan, atau deployment belum memakai Versi baru.';
+    d.appendChild(h); d.appendChild(p); d.appendChild(q); a.appendChild(d);
+  }
+  // Analisis hanya memeriksa teks skrip halaman ini sendiri (document), tidak pernah data dari server.
+  function analisis(L) {
+    var s = document.querySelector('script[data-bagian="' + L + '"]'), out = [];
+    if (!s) return ['Scripts' + L + ' tidak ada atau kosong (tidak ditemukan di halaman).'];
+    var lines = s.textContent.split('\n').slice(2), code = lines.join('\n'), i, j, k;   // dua baris pertama = pembungkus
+    if (!code.trim()) return ['Scripts' + L + ' tidak ada atau kosong.'];
+    if (/&(lt|gt|amp|quot);/.test(code)) out.push('Scripts' + L + ' berisi kode HTML (&lt; &amp;): berkas dibaca sebagai HTML. Pastikan berkas diawali tag script dan diakhiri tag penutup script.');
+    if (code.indexOf('/* AKHIR Scripts' + L) < 0) out.push('Scripts' + L + ' terpotong (baris penutup AKHIR Scripts' + L + ' tidak ditemukan).');
+    scan: for (i = 0; i < lines.length; i++) for (j = 0; j < lines[i].length; j++) {
+      var c = lines[i].charCodeAt(j);
+      if (c > 127 && c !== 0x2026) { out.push('Karakter aneh \\u' + ('0000' + c.toString(16)).slice(-4) + ' di Scripts' + L + ' baris ' + (i + 1) + '.'); break scan; }
+    }
+    var starts = [0];
+    for (i = 1; i < lines.length; i++) if (/^[^\s}\])]/.test(lines[i])) starts.push(i);   // awal pernyataan tingkat-atas (kolom 0)
+    starts.push(lines.length);
+    for (k = 0; k < starts.length - 1; k++) {
+      try { new Function(lines.slice(starts[k], starts[k + 1]).join('\n')); }   // hanya memeriksa sintaks, tidak dijalankan
+      catch (e) {
+        if (e instanceof SyntaxError) out.push('Pernyataan bermasalah di Scripts' + L + ' baris ' + (starts[k] + 1) + ': ' + lines[starts[k]].slice(0, 60));
+        break;   // selain SyntaxError (mis. eval diblokir): lewati analisis
+      }
+    }
+    return out;
+  }
+  window.__osisAnalisis = analisis;
+  function laporan(awal) {
+    var ex = window.__osisExpect, got = window.__osisParts || '', miss = [], t = awal, a = [], k;
+    if (!ex) return t;
+    for (k = 0; k < ex.length; k++) if (got.indexOf(ex.charAt(k)) < 0) miss.push(ex.charAt(k));
+    if (!miss.length) return t;
+    t += ' Berkas yang belum termuat: ' + miss.map(function (L) { return 'Scripts' + L; }).join(', ') + '. Periksa berkas PERTAMA dalam daftar ini; yang sesudahnya bisa ikut gagal karenanya.';
+    miss.forEach(function (L) { a = a.concat(analisis(L)); });
+    return a.length ? t + ' Analisis: ' + a.slice(0, 3).join(' ') : t;
+  }
+  window.addEventListener('error', function (e) {
+    var m = 'Galat: ' + (e.message || 'tidak diketahui') + (e.lineno ? ' (baris ' + e.lineno + ')' : '') + '.';
+    setTimeout(function () { show(laporan(m)); }, 400);   // tunggu semua bagian selesai dijalankan
+  });
+  window.__osisIncomplete = function () {
+    setTimeout(function () { show(laporan('Skrip tidak lengkap: hanya ' + (window.__osisParts || '').length + ' dari ' + (window.__osisExpect || '').length + ' bagian terpasang.')); }, 400);
+  };
+  setTimeout(function () { show(laporan('Skrip tidak mulai berjalan setelah 8 detik.')); }, 8000);
+})();
+</script>
+<script>window.__osisExpect = 'ABCDE';</script>
+<?!= include_('ScriptsA') ?>
+<?!= include_('ScriptsB') ?>
+<?!= include_('ScriptsC') ?>
+<?!= include_('ScriptsD') ?>
+<?!= include_('ScriptsE') ?>
+<script>
+if (window.__osisParts === window.__osisExpect) { if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot); else boot(); } else if (window.__osisIncomplete) { window.__osisIncomplete(); }
+</script>
+</body>
+</html>

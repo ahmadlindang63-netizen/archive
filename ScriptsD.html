@@ -1,0 +1,195 @@
+<script data-bagian="D">
+'use strict';
+/* OSIS Archive: skrip bagian 4 dari 5. Berkas ini DIAWALI tag script dan DIAKHIRI tag penutup script: jangan dihapus. Semua bagian ScriptsA-ScriptsE wajib ada. */
+function editDoc(d, ctx) {
+  Promise.all([call('categories.list'), call('docs.filters')]).then(function (rs) {
+    var cats = rs[0].ok ? rs[0].categories.slice() : [];
+    if (!cats.some(function (c) { return c.categoryId === d.categoryId; })) cats.push({ categoryId: d.categoryId, categoryName: d.categoryName, activeStatus: 'inactive' });
+    var mf = metaForm({ title: d.title, categoryId: d.categoryId, year: d.year, activityName: d.activityName, documentDate: d.documentDate, description: d.description, keywords: d.keywords }, cats, rs[1].ok ? rs[1].activities : []);
+    var msg = msgBox(), body = h('div', null, msg.node, mf.node);
+    openModal({ title: 'Ubah metadata', body: body, actions: [{ label: 'Batal', kind: 'ghost', onClick: function (m) { m.close(); } },
+      { label: 'Simpan', kind: 'primary', onClick: function (m, b) {
+        msg.clear(); var p = mf.validate(); if (p) { msg.set(p); return; }
+        run(b, function () { var payload = mf.read(); payload.documentId = d.documentId; return call('docs.updateMeta', payload).then(function (r) {
+          if (!r.ok) { msg.set(r.message); return; } m.close(); toast('Metadata disimpan.', 'success'); if (ctx && ctx.onChanged) ctx.onChanged(); }); });
+      } }] });
+  });
+}
+
+/* ----- daftar dokumen + pencarian + filter (dipakai Semua Dokumen, Dokumen Saya, Arsip admin) ----- */
+VIEWS.docs = function () { return docsPanel('all', { title: 'Semua Dokumen' }); };
+VIEWS.mine = function () { return docsPanel('mine', { title: 'Dokumen Saya' }); };
+
+function docsPanel(mode, opt) {
+  var F = S.filters[mode] || (S.filters[mode] = {});
+  return Promise.all([call('categories.list', mode === 'admin' ? { includeInactive: true } : {}), call('docs.filters')]).then(function (rs) {
+    if (!rs[0].ok) return errorBox(rs[0], function () { go(S.route); });
+    var cats = rs[0].categories, fl = rs[1].ok ? rs[1] : { years: [], activities: [], uploaders: [], fileTypes: [] };
+    var results = h('div', { 'aria-live': 'polite' });
+    var viewMode = (function () { try { return window.sessionStorage.getItem('osis_v') === 'kisi' ? 'kisi' : 'daftar'; } catch (e) { return 'daftar'; } })(), listEl = null;
+    var bList = h('button', { type: 'button', 'aria-label': 'Tampilan daftar', onclick: function () { setView('daftar'); } }, icon('list'));
+    var bGrid = h('button', { type: 'button', 'aria-label': 'Tampilan kisi', onclick: function () { setView('kisi'); } }, icon('grid'));
+    var toggle = h('div', { class: 'view-toggle', role: 'group', 'aria-label': 'Tampilan dokumen' }, bList, bGrid);
+    function paintView() {
+      bList.setAttribute('aria-pressed', viewMode === 'daftar' ? 'true' : 'false'); bGrid.setAttribute('aria-pressed', viewMode === 'kisi' ? 'true' : 'false');
+      if (listEl) listEl.className = viewMode === 'kisi' ? 'docs-grid' : 'docs-list';
+    }
+    function setView(v) { viewMode = v; try { window.sessionStorage.setItem('osis_v', v); } catch (e) {} paintView(); }
+    var q = input('search', { value: F.q || '', placeholder: 'Cari judul, nama file, kegiatan, kata kunci…', 'aria-label': 'Kata pencarian' });
+    var fCat = select([['', 'Semua kategori']].concat(cats.map(function (c) { return [c.categoryId, c.categoryName]; })), F.categoryId, { 'aria-label': 'Kategori' });
+    var fYear = select([['', 'Semua tahun']].concat(fl.years.map(function (y) { return [String(y), String(y)]; })), F.year, { 'aria-label': 'Tahun' });
+    var fType = select([['', 'Semua jenis file']].concat(['pdf', 'docx', 'xlsx', 'pptx', 'jpg', 'png'].map(function (t) { return [t, typeLabel(t)]; })), F.fileType, { 'aria-label': 'Jenis file' });
+    var fAct = select([['', 'Semua kegiatan']].concat(fl.activities.map(function (a) { return [a, a]; })), F.activity, { 'aria-label': 'Kegiatan' });
+    var fUp = select([['', 'Semua pengunggah']].concat(fl.uploaders.map(function (u) { return [u.userId, u.name]; })), F.uploaderId, { 'aria-label': 'Pengunggah' });
+    var fSort = select([['', 'Urut: otomatis'], ['relevansi', 'Paling relevan'], ['terbaru', 'Terbaru']], F.sort, { 'aria-label': 'Urutan' });
+    var fStatus = mode === 'admin' ? select([['tersedia', 'Status: tersedia'], ['hilang', 'Status: file hilang'], ['gagal', 'Status: gagal'], ['memproses', 'Status: diproses'], ['dihapus', 'Status: dihapus']], F.status || 'tersedia', { 'aria-label': 'Status' }) : null;
+    var ctx = { onChanged: function () { load(); } };
+    function collect() {
+      F.q = q.value.trim(); F.categoryId = fCat.value; F.year = fYear.value; F.fileType = fType.value; F.activity = fAct.value; F.uploaderId = fUp.value; F.sort = fSort.value; if (fStatus) F.status = fStatus.value;
+    }
+    function payload() {
+      var p = { page: F.page || 1, pageSize: 20 };
+      ['q', 'categoryId', 'fileType', 'activity', 'uploaderId', 'sort'].forEach(function (k) { if (F[k]) p[k] = F[k]; });
+      if (F.year) p.year = parseInt(F.year, 10); if (mode === 'mine') p.mine = true; if (mode === 'admin' && F.status && F.status !== 'tersedia') p.status = F.status;
+      return p;
+    }
+    function load() {
+      clear(results); results.appendChild(spinner('Mencari…'));
+      return call('docs.search', payload()).then(function (r) {
+        clear(results);
+        if (!r.ok) { results.appendChild(errorBox(r, load)); return; }
+        if (r.page > r.totalPages) { F.page = r.totalPages; return load(); }
+        results.appendChild(h('div', { class: 'results-head' }, h('p', { class: 'meta', role: 'status' }, r.total + ' dokumen ditemukan'), toggle));
+        if (!r.items.length) { listEl = null; results.appendChild(h('div', { class: 'card empty' }, h('p', null, 'Tidak ada dokumen yang cocok.'), btn('Reset filter', { icon: 'refresh', onclick: reset }))); return; }
+        listEl = h('div', null); r.items.forEach(function (d) { listEl.appendChild(docCard(d, ctx)); }); results.appendChild(listEl); paintView();
+        if (r.totalPages > 1) results.appendChild(h('div', { class: 'pager' }, btn('Sebelumnya', { sm: true, disabled: r.page <= 1, onclick: function () { F.page = r.page - 1; load(); } }),
+          h('span', { class: 'meta' }, 'Halaman ' + r.page + ' dari ' + r.totalPages), btn('Berikutnya', { sm: true, disabled: r.page >= r.totalPages, onclick: function () { F.page = r.page + 1; load(); } })));
+      });
+    }
+    function reset() { S.filters[mode] = F = {}; q.value = ''; [fCat, fYear, fType, fAct, fUp, fSort].forEach(function (s) { s.value = ''; }); if (fStatus) fStatus.value = 'tersedia'; load(); }
+    function apply(e) { if (e) e.preventDefault(); collect(); F.page = 1; load(); }
+    [fCat, fYear, fType, fAct, fUp, fSort, fStatus].forEach(function (s) { if (s) s.addEventListener('change', function () { apply(); }); });
+    var active = ['categoryId', 'year', 'fileType', 'activity', 'uploaderId', 'sort'].some(function (k) { return F[k]; });
+    var filters = h('details', { class: 'filters', open: active || mode === 'admin' }, h('summary', null, 'Filter'),
+      h('div', { class: 'filter-grid' }, fCat, fYear, fType, fAct, fUp, fSort, fStatus), btn('Reset filter', { sm: true, icon: 'refresh', onclick: reset }));
+    var form = h('form', { class: 'searchbar', role: 'search', onsubmit: apply }, q, btn('Cari', { type: 'submit', kind: 'primary', icon: 'search' }));
+    var out = h('div', null, opt.embedded ? null : h('h1', null, opt.title), form, filters, results);
+    load(); return out;
+  });
+}
+
+
+/* ===================== UNGGAH ===================== */
+function newRequestId() { return randomHex(16); }
+function extOf(name) { var i = name.lastIndexOf('.'); return i > 0 ? name.slice(i + 1).toLowerCase() : ''; }
+function fileProblem(f) {
+  if (EXT_OK.indexOf(extOf(f.name)) < 0) return 'Jenis file tidak diizinkan. Yang diizinkan: PDF, DOCX, XLSX, PPTX, JPG, PNG.';
+  if (f.size === 0) return 'File kosong.';
+  if (f.size > MAX_FILE) return 'Ukuran file ' + fmtSize(f.size) + ' melebihi batas ' + fmtSize(MAX_FILE) + '.';
+  if (f.name.length > 120) return 'Nama file maksimal 120 karakter. Ganti nama file lalu pilih lagi.';
+  return '';
+}
+function titleFromName(n) { return n.replace(/\.[^.]+$/, '').replace(/[_\-]+/g, ' ').replace(/\s+/g, ' ').trim().replace(/^[=+\-@]+/, ''); }
+function readBase64(file) {
+  return new Promise(function (resolve, reject) {
+    var fr = new FileReader();
+    fr.onload = function () { var s = String(fr.result); resolve(s.slice(s.indexOf(',') + 1)); };
+    fr.onerror = function () { reject(new Error('baca')); };
+    fr.readAsDataURL(file);
+  });
+}
+var KEEP_REQUEST = ['UPLOAD_GAGAL', 'METADATA_GAGAL_SIMPAN', 'SEDANG_DIPROSES', 'JARINGAN', 'GALAT_SERVER'];
+
+VIEWS.upload = function () {
+  return Promise.all([call('categories.list'), call('docs.filters')]).then(function (rs) {
+    if (!rs[0].ok) return errorBox(rs[0], function () { go('upload'); });
+    var st = { file: null, requestId: newRequestId() }, mf = metaForm({ year: CURRENT_YEAR }, rs[0].categories, rs[1].ok ? rs[1].activities : []);
+    var msg = msgBox(), fileInput = h('input', { type: 'file', class: 'input', accept: '.pdf,.docx,.xlsx,.pptx,.jpg,.jpeg,.png' });
+    var fileHint = h('span', null, 'Maksimal ' + fmtSize(MAX_FILE) + '. Jenis: PDF, DOCX, XLSX, PPTX, JPG, PNG.');
+    var holder = h('div');
+    fileInput.addEventListener('change', function () {
+      msg.clear(); st.file = null; var f = fileInput.files && fileInput.files[0]; fileHint.textContent = 'Maksimal ' + fmtSize(MAX_FILE) + '. Jenis: PDF, DOCX, XLSX, PPTX, JPG, PNG.';
+      if (!f) return;
+      var p = fileProblem(f); if (p) { msg.set(p); fileInput.value = ''; return; }
+      st.file = f; st.requestId = newRequestId(); if (!mf.get('title')) mf.set('title', titleFromName(f.name));
+      fileHint.textContent = f.name + ' \u00b7 ' + fmtSize(f.size);
+    });
+    var submit = h('button', { type: 'submit', class: 'btn primary lg' }, icon('upload'), 'Unggah dokumen');
+    var fileField = h('div', { class: 'field' }, h('label', { for: (fileInput.id = 'f' + (++uid)) }, 'File', h('span', { class: 'req', 'aria-hidden': 'true' }, ' *')), fileInput, h('p', { class: 'hint' }, fileHint));
+    var form = h('form', { class: 'card', novalidate: true, onsubmit: function (e) { e.preventDefault(); doUpload(); } }, msg.node, fileField, mf.node, submit);
+    function doUpload() {
+      msg.clear();
+      if (!st.file) { msg.set('Pilih file terlebih dahulu.'); return; }
+      var p = mf.validate(); if (p) { msg.set(p); return; }
+      run(submit, function () {
+        msg.set('Mengunggah… jangan tutup halaman ini sampai selesai.', 'info');
+        return readBase64(st.file).then(function (b64) {
+          var payload = mf.read(); payload.requestId = st.requestId; payload.fileName = st.file.name; payload.base64 = b64;
+          return call('docs.upload', payload);
+        }).then(function (r) {
+          if (r.ok) { showDone(r); return; }
+          if (KEEP_REQUEST.indexOf(r.code) < 0) st.requestId = newRequestId();
+          msg.set(r.message + (KEEP_REQUEST.indexOf(r.code) >= 0 && r.code !== 'SEDANG_DIPROSES' ? ' Tekan "Unggah dokumen" lagi untuk mencoba kembali.' : ''));
+        }, function () { msg.set('File tidak dapat dibaca. Pilih ulang file Anda.'); });
+      });
+    }
+    function showDone(r) {
+      clear(holder);
+      holder.appendChild(h('div', { class: 'card' }, h('div', { class: 'msg success', role: 'status' }, icon('check'), ' ', r.alreadySaved ? 'Dokumen ini sudah tersimpan sebelumnya.' : 'Upload berhasil. Dokumen langsung tersedia di arsip.'),
+        h('h2', null, r.document.title), h('p', { class: 'meta' }, r.document.categoryName + ' \u00b7 ' + r.document.year + ' \u00b7 ' + fmtSize(r.document.fileSize)),
+        h('div', { class: 'row-actions' }, btn('Unggah lagi', { kind: 'primary', icon: 'plus', onclick: function () { go('upload'); } }), btn('Dokumen saya', { icon: 'file', onclick: function () { go('mine'); } }))));
+      form.hidden = true; holder.scrollIntoView && holder.scrollIntoView({ block: 'center' });
+    }
+    return h('div', null, h('h1', null, 'Unggah Dokumen'), h('p', { class: 'meta' }, 'Dokumen yang lolos pemeriksaan langsung masuk arsip tanpa persetujuan admin.'), holder, form);
+  });
+};
+
+/* ===================== PROFIL ===================== */
+VIEWS.profile = function () {
+  var u = S.user, msg1 = msgBox(), msg2 = msgBox();
+  var name = input('text', { value: u.displayName, maxlength: '60' }), saveName = h('button', { type: 'submit', class: 'btn primary' }, 'Simpan nama');
+  var f1 = h('form', { class: 'card', novalidate: true, onsubmit: function (e) {
+    e.preventDefault(); msg1.clear();
+    run(saveName, function () { return call('users.updateSelf', { displayName: name.value.trim() }).then(function (r) {
+      if (!r.ok) { msg1.set(r.message); return; } S.user.displayName = r.user.displayName; toast('Nama disimpan.', 'success'); render();
+    }); });
+  } }, h('h2', null, 'Data akun'), h('dl', { class: 'dl' }, h('dt', null, 'Username'), h('dd', null, u.username), h('dt', null, 'Peran'), h('dd', null, u.role === 'admin' ? 'Admin' : 'Anggota')),
+    h('div', { style: 'height:.8rem' }), msg1.node, field('Nama tampilan', name), saveName);
+  var oldPw = pwField('Kata sandi lama', { autocomplete: 'current-password' }), newPw = pwField('Kata sandi baru', { autocomplete: 'new-password' }), newPw2 = pwField('Ulangi kata sandi baru', { autocomplete: 'new-password' });
+  var savePw = h('button', { type: 'submit', class: 'btn primary' }, icon('lock'), 'Ganti kata sandi');
+  var f2 = h('form', { class: 'card', novalidate: true, onsubmit: function (e) {
+    e.preventDefault(); msg2.clear();
+    var o = oldPw.input.value, n = newPw.input.value;
+    if (!o || !n) { msg2.set('Isi kata sandi lama dan baru.'); return; }
+    var prob = pwProblem(n, u.username); if (prob) { msg2.set(prob); return; }
+    if (n !== newPw2.input.value) { msg2.set('Kata sandi baru dan ulangannya tidak sama.'); return; }
+    run(savePw, function () {
+      msg2.set('Memproses… ini bisa memakan beberapa detik.', 'info'); var salt = randomHex(16), iter, oldKey;
+      return call('auth.salt', { username: u.username }).then(function (s) {
+        if (!s.ok) throw { resp: s }; iter = s.iterations;
+        return deriveKey(o, s.salt, iter);
+      }).then(function (k) { oldKey = k; return deriveKey(n, salt, iter); })
+        .then(function (newKey) { return call('auth.changePassword', { oldKey: oldKey, newSalt: salt, newKey: newKey }); })
+        .then(function (r) { if (!r.ok) { msg2.set(r.message); return; } devStore.clear(); endSession('Kata sandi diubah. Silakan login dengan kata sandi baru.'); })
+        .catch(function (e) { msg2.set(e && e.resp ? e.resp.message : cryptoMsg(e)); });
+    });
+  } }, h('h2', null, 'Ganti kata sandi'), msg2.node, oldPw.node, newPw.node, newPw2.node, h('p', { class: 'hint' }, 'Setelah diganti, semua perangkat akan keluar dan perlu login ulang.'), savePw);
+  var devBox = h('div', { class: 'card' }, h('h2', null, 'Perangkat yang diingat'), h('p', { class: 'meta' }, 'Memuat…'));
+  call('auth.devices', { deviceToken: devStore.get() || undefined }).then(function (r) {
+    clear(devBox); devBox.appendChild(h('h2', null, 'Perangkat yang diingat'));
+    if (!r.ok) { devBox.appendChild(h('p', { class: 'meta' }, 'Tidak dapat memuat daftar perangkat.')); return; }
+    if (!r.enabled) { devBox.appendChild(h('p', { class: 'meta' }, 'Fitur "ingat saya" tidak berlaku untuk akun ini (demi keamanan). Anda perlu login setiap sesi berakhir.')); return; }
+    devBox.appendChild(h('p', { class: 'meta' }, r.devices.length ? r.devices.length + ' perangkat diingat (kedaluwarsa jika tidak dipakai ' + r.idleDays + ' hari).' : 'Belum ada perangkat yang diingat.'));
+    var ul = h('ul', null, r.devices.map(function (d) { return h('li', null, (d.current ? 'Perangkat ini' : 'Perangkat lain') + ' \u00b7 dipakai terakhir ' + fmtDateTime(d.lastUsedAt) + ' \u00b7 berlaku sampai ' + fmtDate(d.expiresAt)); }));
+    if (r.devices.length) devBox.appendChild(ul);
+    devBox.appendChild(btn('Keluar dari semua perangkat', { kind: 'danger', icon: 'logout', onclick: function () {
+      confirmBox('Keluar dari semua perangkat?', 'Semua perangkat yang diingat dan semua sesi aktif akan keluar, termasuk perangkat ini. Anda perlu login lagi.', 'Ya, keluar semua', true).then(function (ok) {
+        if (ok) call('auth.revokeDevices', {}).then(function (x) { if (x.ok) { devStore.clear(); endSession('Anda keluar dari semua perangkat.'); } else toast(x.message, 'error'); });
+      });
+    } }));
+  });
+  return h('div', null, h('h1', null, 'Profil'), f1, f2, devBox, btn('Keluar', { icon: 'logout', onclick: logout }));
+};
+window.__osisParts = (window.__osisParts || '') + 'D';
+/* AKHIR ScriptsD: jika baris ini tidak terlihat di akhir berkas, tempelannya terpotong. */
+</script>
